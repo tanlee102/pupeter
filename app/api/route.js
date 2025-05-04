@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import puppeteer from "puppeteer";
-import puppeteerCore from "puppeteer-core";
-import chromium from "@sparticuz/chromium-min";
+// import puppeteerCore from "puppeteer-core";
+// import chromium from "@sparticuz/chromium-min";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -20,15 +20,15 @@ export async function GET(request) {
   try {
     let browser;
     if (false) {
-      const executablePath = await chromium.executablePath(
-        "https://github.com/Sparticuz/chromium/releases/download/v131.0.1/chromium-v131.0.1-pack.tar"
-      );
-      browser = await puppeteerCore.launch({
-        executablePath,
-        args: chromium.args,
-        headless: chromium.headless,
-        defaultViewport: chromium.defaultViewport,
-      });
+      // const executablePath = await chromium.executablePath(
+      //   "https://github.com/Sparticuz/chromium/releases/download/v131.0.1/chromium-v131.0.1-pack.tar"
+      // );
+      // browser = await puppeteerCore.launch({
+      //   executablePath,
+      //   args: chromium.args,
+      //   headless: chromium.headless,
+      //   defaultViewport: chromium.defaultViewport,
+      // });
     } else {
       browser = await puppeteer.launch({
         headless: true,
