@@ -15,9 +15,7 @@ export async function GET(request) {
   }
 
   let browser;
-  let selectedVideoUrl = null;
-  let selectedBitrate = null;
-  let awemeDetailJson = null;
+  let foundData = null;
 
   try {
     browser = await puppeteer.launch({
@@ -31,46 +29,23 @@ export async function GET(request) {
       url = "https://" + url;
     }
 
-    // Listen for the aweme detail response
-    page.on("response", async (response) => {
+    // Listen for the first aweme detail response only
+    const responseHandler = async (response) => {
       try {
         const responseUrl = response.url();
         if (
           responseUrl.includes(
             "https://www.douyin.com/aweme/v1/web/aweme/detail/"
-          )
+          ) &&
+          !foundData
         ) {
-          const data = await response.json();
-          if (
-            data &&
-            data.aweme_detail &&
-            data.aweme_detail.video &&
-            Array.isArray(data.aweme_detail.video.bit_rate)
-          ) {
-            // Chọn video có độ phân giải cao nhất (bit_rate lớn nhất)
-            const bitRates = data.aweme_detail.video.bit_rate;
-            let best = bitRates[0];
-            for (let i = 1; i < bitRates.length; i++) {
-              if (bitRates[i].bit_rate > best.bit_rate) {
-                best = bitRates[i];
-              }
-            }
-            if (
-              best &&
-              best.play_addr &&
-              Array.isArray(best.play_addr.url_list) &&
-              best.play_addr.url_list.length > 0
-            ) {
-              selectedVideoUrl = best.play_addr.url_list[0];
-              selectedBitrate = best.bit_rate;
-              awemeDetailJson = data.aweme_detail;
-            }
-          }
+          foundData = await response.json();
         }
       } catch (err) {
         // Ignore JSON parse errors for non-JSON responses
       }
-    });
+    };
+    page.on("response", responseHandler);
 
     try {
       await page.goto(url, { timeout: 150000 });
@@ -79,33 +54,29 @@ export async function GET(request) {
     }
 
     // Đợi tối đa 10s để response được bắt
-    const waitForVideoUrl = async () => {
+    const waitForData = async () => {
       for (let i = 0; i < 100; i++) {
-        if (selectedVideoUrl) break;
+        if (foundData) break;
         await new Promise((r) => setTimeout(r, 100));
       }
     };
-    await waitForVideoUrl();
+    await waitForData();
 
     await browser.close();
 
-    if (selectedVideoUrl) {
-      return NextResponse.json({
-        video_url: selectedVideoUrl,
-        bitrate: selectedBitrate,
-        aweme_detail: awemeDetailJson,
-      });
+    if (foundData) {
+      return NextResponse.json(foundData);
     } else {
       return NextResponse.json(
-        { message: "Không tìm thấy video url phù hợp" },
+        { message: "Không tìm thấy dữ liệu phù hợp" },
         { status: 404 }
       );
     }
   } catch (error) {
     if (browser) await browser.close();
-    console.error("PDF generation error:", error);
+    console.error("Error:", error);
     return NextResponse.json(
-      { message: "Error generating video url" },
+      { message: "Error fetching data" },
       { status: 500 }
     );
   }
