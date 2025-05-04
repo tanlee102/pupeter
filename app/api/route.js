@@ -39,6 +39,8 @@ function releasePage() {
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const urlToVisit = searchParams.get("url");
+  const mode = searchParams.get("mode");
+  const isFHD = mode === "FHD";
 
   if (!urlToVisit) {
     return NextResponse.json(
@@ -89,8 +91,115 @@ export async function GET(request) {
           ) &&
           !foundData
         ) {
-          foundData = await response.json();
-          responsePromiseResolve(); // resolve ngay khi có data
+          const data = await response.json();
+          if (data && data.aweme_detail) {
+            const detail = data.aweme_detail;
+            let accountName = null;
+            let thumbnailUrl = null;
+            let selectedVideoUrl = null;
+
+            // Lấy tên account
+            if (detail.author && detail.author.nickname) {
+              accountName = detail.author.nickname.replace(
+                /[<>:"/\\|?*]+/g,
+                "_"
+              );
+            }
+            // Lấy thumbnail
+            if (
+              detail.video &&
+              detail.video.cover &&
+              detail.video.cover.url_list &&
+              detail.video.cover.url_list.length > 0
+            ) {
+              thumbnailUrl = detail.video.cover.url_list[0];
+            }
+            // Chọn video
+            const bitRateData =
+              detail.video && detail.video.bit_rate
+                ? detail.video.bit_rate
+                : null;
+            if (bitRateData && Array.isArray(bitRateData)) {
+              let candidate = null;
+              if (isFHD) {
+                // Ưu tiên chọn video >= 1120
+                let candidates1120 = bitRateData.filter((video) => {
+                  const play_addr = video.play_addr;
+                  return (
+                    play_addr &&
+                    play_addr.width >= 1120 &&
+                    play_addr.height >= 1120 &&
+                    play_addr.data_size
+                  );
+                });
+                if (candidates1120.length > 0) {
+                  candidate = candidates1120.reduce((min, v) =>
+                    v.play_addr.data_size < min.play_addr.data_size ? v : min
+                  );
+                }
+              }
+              if (!candidate) {
+                // Ưu tiên chọn video >= 1080
+                let candidates1080 = bitRateData.filter((video) => {
+                  const play_addr = video.play_addr;
+                  return (
+                    play_addr &&
+                    play_addr.width >= 1080 &&
+                    play_addr.height >= 1080 &&
+                    play_addr.data_size
+                  );
+                });
+                if (candidates1080.length > 0) {
+                  candidate = candidates1080.reduce((min, v) =>
+                    v.play_addr.data_size < min.play_addr.data_size ? v : min
+                  );
+                } else {
+                  // Nếu không có video >= 1080, chọn video >= 720
+                  let candidates720 = bitRateData.filter((video) => {
+                    const play_addr = video.play_addr;
+                    return (
+                      play_addr &&
+                      play_addr.width >= 720 &&
+                      play_addr.height >= 720 &&
+                      play_addr.data_size
+                    );
+                  });
+                  if (candidates720.length > 0) {
+                    candidate = candidates720.reduce((min, v) =>
+                      v.play_addr.data_size < min.play_addr.data_size ? v : min
+                    );
+                  } else {
+                    // Nếu không có video >= 720, chọn video >= 540
+                    let candidates540 = bitRateData.filter((video) => {
+                      const play_addr = video.play_addr;
+                      return (
+                        play_addr &&
+                        play_addr.width >= 540 &&
+                        play_addr.height >= 540 &&
+                        play_addr.data_size
+                      );
+                    });
+                    if (candidates540.length > 0) {
+                      candidate = candidates540.reduce((min, v) =>
+                        v.play_addr.data_size < min.play_addr.data_size
+                          ? v
+                          : min
+                      );
+                    }
+                  }
+                }
+              }
+              if (candidate) {
+                selectedVideoUrl = candidate.play_addr.url_list[0];
+              }
+            }
+            foundData = {
+              video_url: selectedVideoUrl,
+              thumbnail_url: thumbnailUrl,
+              account_name: accountName,
+            };
+            responsePromiseResolve();
+          }
         }
       } catch (err) {}
     });
