@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import puppeteer from "puppeteer";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 80;
 
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
@@ -16,6 +16,10 @@ export async function GET(request) {
 
   let browser;
   let foundData = null;
+  let responsePromiseResolve;
+  const responsePromise = new Promise((resolve) => {
+    responsePromiseResolve = resolve;
+  });
 
   try {
     browser = await puppeteer.launch({
@@ -24,13 +28,24 @@ export async function GET(request) {
     });
     const page = await browser.newPage();
 
+    // Block images, stylesheets, fonts to save bandwidth and speed up
+    await page.setRequestInterception(true);
+    page.on("request", (req) => {
+      const resourceType = req.resourceType();
+      if (["image", "stylesheet", "font"].includes(resourceType)) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
+
     let url = urlToVisit;
     if (!/^https?:\/\//i.test(url)) {
       url = "https://" + url;
     }
 
     // Listen for the first aweme detail response only
-    const responseHandler = async (response) => {
+    page.on("response", async (response) => {
       try {
         const responseUrl = response.url();
         if (
@@ -40,27 +55,30 @@ export async function GET(request) {
           !foundData
         ) {
           foundData = await response.json();
+          responsePromiseResolve(); // resolve ngay khi có data
         }
       } catch (err) {
         // Ignore JSON parse errors for non-JSON responses
       }
-    };
-    page.on("response", responseHandler);
+    });
 
-    try {
-      await page.goto(url, { timeout: 150000 });
-    } catch (err) {
-      console.error("Lỗi tải trang:", err.message);
-    }
+    // Promise race: chờ response hoặc timeout tổng thể 80s
+    const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 80000));
 
-    // Đợi tối đa 10s để response được bắt
-    const waitForData = async () => {
-      for (let i = 0; i < 100; i++) {
-        if (foundData) break;
-        await new Promise((r) => setTimeout(r, 100));
-      }
-    };
-    await waitForData();
+    await Promise.race([
+      (async () => {
+        try {
+          await page.goto(url, {
+            timeout: 70000,
+            waitUntil: "domcontentloaded",
+          });
+        } catch (err) {
+          // Có thể timeout, không sao
+        }
+        await responsePromise;
+      })(),
+      timeoutPromise,
+    ]);
 
     await browser.close();
 
@@ -68,7 +86,7 @@ export async function GET(request) {
       return NextResponse.json(foundData);
     } else {
       return NextResponse.json(
-        { message: "Không tìm thấy dữ liệu phù hợp" },
+        { message: "Không tìm thấy dữ liệu phù hợp hoặc timeout" },
         { status: 404 }
       );
     }
