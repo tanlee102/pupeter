@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import puppeteer from "puppeteer";
 export const dynamic = "force-dynamic";
-export const maxDuration = 100;
+export const maxDuration = 120;
 
 // Semaphore để giới hạn số page mở đồng thời (ví dụ: 3)
 const MAX_CONCURRENT_PAGES = 3;
@@ -38,16 +38,18 @@ function releasePage() {
 
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
-  const urlToVisit = searchParams.get("url");
+  let id = searchParams.get("id");
   const mode = searchParams.get("mode");
   const isFHD = mode === "FHD";
 
-  if (!urlToVisit) {
+  if (!id) {
     return NextResponse.json(
-      { message: "Missing URL parameter" },
+      { message: "Missing id parameter" },
       { status: 400 }
     );
   }
+  // Ghép thành url đúng
+  const urlToVisit = `https://www.douyin.com/video/${id}`;
 
   await acquirePage();
   let browser;
@@ -76,10 +78,7 @@ export async function GET(request) {
     await page.setViewport({ width: 500, height: 300 });
     await page.setCacheEnabled(false);
 
-    let url = urlToVisit;
-    if (!/^https?:\/\//i.test(url)) {
-      url = "https://" + url;
-    }
+    const url = urlToVisit;
 
     // Listen for the first aweme detail response only
     page.on("response", async (response) => {
@@ -204,14 +203,16 @@ export async function GET(request) {
       } catch (err) {}
     });
 
-    // Promise race: chờ response hoặc timeout tổng thể 95s
-    const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 95000));
+    // Promise race: chờ response hoặc timeout tổng thể 115s
+    const timeoutPromise = new Promise((resolve) =>
+      setTimeout(resolve, 115000)
+    );
 
     await Promise.race([
       (async () => {
         try {
-          await page.goto(url, {
-            timeout: 90000,
+          await page.goto(urlToVisit, {
+            timeout: 110000,
             waitUntil: "domcontentloaded",
           });
         } catch (err) {}
