@@ -3,6 +3,39 @@ import puppeteer from "puppeteer";
 export const dynamic = "force-dynamic";
 export const maxDuration = 100;
 
+// Semaphore để giới hạn số page mở đồng thời (ví dụ: 3)
+const MAX_CONCURRENT_PAGES = 3;
+let currentPages = 0;
+const pageQueue = [];
+
+let browserPromise = null;
+async function getBrowser() {
+  if (!browserPromise) {
+    browserPromise = puppeteer.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
+  }
+  return browserPromise;
+}
+
+async function acquirePage() {
+  if (currentPages < MAX_CONCURRENT_PAGES) {
+    currentPages++;
+    return;
+  }
+  return new Promise((resolve) => pageQueue.push(resolve));
+}
+
+function releasePage() {
+  currentPages--;
+  if (pageQueue.length > 0) {
+    currentPages++;
+    const next = pageQueue.shift();
+    next();
+  }
+}
+
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const urlToVisit = searchParams.get("url");
@@ -14,7 +47,9 @@ export async function GET(request) {
     );
   }
 
+  await acquirePage();
   let browser;
+  let page;
   let foundData = null;
   let responsePromiseResolve;
   const responsePromise = new Promise((resolve) => {
@@ -22,11 +57,8 @@ export async function GET(request) {
   });
 
   try {
-    browser = await puppeteer.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    });
-    const page = await browser.newPage();
+    browser = await getBrowser();
+    page = await browser.newPage();
 
     // Block images, stylesheets, fonts, media to save bandwidth and speed up
     await page.setRequestInterception(true);
@@ -79,7 +111,8 @@ export async function GET(request) {
       timeoutPromise,
     ]);
 
-    await browser.close();
+    await page.close();
+    releasePage();
 
     if (foundData) {
       return NextResponse.json(foundData);
@@ -90,7 +123,8 @@ export async function GET(request) {
       );
     }
   } catch (error) {
-    if (browser) await browser.close();
+    if (page) await page.close();
+    releasePage();
     return NextResponse.json(
       { message: "Error fetching data" },
       { status: 500 }
