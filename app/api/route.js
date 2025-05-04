@@ -1,7 +1,5 @@
 import { NextResponse } from "next/server";
 import puppeteer from "puppeteer";
-// import puppeteerCore from "puppeteer-core";
-// import chromium from "@sparticuz/chromium-min";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -17,58 +15,83 @@ export async function GET(request) {
     );
   }
 
-  try {
-    let browser;
-    if (false) {
-      // const executablePath = await chromium.executablePath(
-      //   "https://github.com/Sparticuz/chromium/releases/download/v131.0.1/chromium-v131.0.1-pack.tar"
-      // );
-      // browser = await puppeteerCore.launch({
-      //   executablePath,
-      //   args: chromium.args,
-      //   headless: chromium.headless,
-      //   defaultViewport: chromium.defaultViewport,
-      // });
-    } else {
-      browser = await puppeteer.launch({
-        headless: true,
-        args: ["--no-sandbox", "--disable-setuid-sandbox"],
-      });
-    }
+  let browser;
+  let page;
+  let videoUrls = null;
+  let found = false;
 
-    const page = await browser.newPage();
+  try {
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
+    page = await browser.newPage();
+    await page.setRequestInterception(true);
+    page.on("request", (req) => req.continue());
+
+    page.on("response", async (response) => {
+      try {
+        const responseUrl = response.url();
+        if (
+          responseUrl.includes(
+            "https://www.douyin.com/aweme/v1/web/aweme/detail/"
+          )
+        ) {
+          const data = await response.json();
+          if (
+            data.aweme_detail &&
+            data.aweme_detail.video &&
+            Array.isArray(data.aweme_detail.video.bit_rate)
+          ) {
+            // Lấy tất cả url_list của các candidate video
+            videoUrls = data.aweme_detail.video.bit_rate
+              .map((v) =>
+                v.play_addr && v.play_addr.url_list ? v.play_addr.url_list : []
+              )
+              .flat();
+            found = videoUrls.length > 0;
+          }
+        }
+      } catch (err) {
+        // ignore
+      }
+    });
 
     let url = urlToVisit;
     if (!/^https?:\/\//i.test(url)) {
       url = "https://" + url;
     }
-
-    await page.goto(url, { waitUntil: "networkidle0" });
-
-    const pdf = await page.pdf({
-      format: "A4",
-      printBackground: true,
-      margin: {
-        top: "20px",
-        right: "10px",
-        bottom: "10px",
-        left: "20px",
-      },
-    });
-
+    await page.goto(url, { timeout: 150000 });
+    // Đợi tối đa 10s hoặc đến khi tìm thấy videoUrls
+    const maxWait = 10000;
+    const poll = 200;
+    let waited = 0;
+    while (!found && waited < maxWait) {
+      await new Promise((r) => setTimeout(r, poll));
+      waited += poll;
+    }
+    await page.close();
     await browser.close();
-
-    return new NextResponse(pdf, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename=webpage.pdf`,
-      },
-    });
+    if (videoUrls && videoUrls.length > 0) {
+      return NextResponse.json({ videoUrls });
+    } else {
+      return NextResponse.json(
+        { message: "No matching video URLs found." },
+        { status: 404 }
+      );
+    }
   } catch (error) {
-    console.error("PDF generation error:", error);
+    if (page)
+      try {
+        await page.close();
+      } catch {}
+    if (browser)
+      try {
+        await browser.close();
+      } catch {}
+    console.error("Douyin video url extraction error:", error);
     return NextResponse.json(
-      { message: "Error generating PDF" },
+      { message: "Error processing Douyin URL" },
       { status: 500 }
     );
   }
