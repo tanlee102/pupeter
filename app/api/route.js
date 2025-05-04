@@ -48,6 +48,7 @@ export async function GET(request) {
     page.on("response", async (response) => {
       try {
         const responseUrl = response.url();
+        console.log(responseUrl);
         if (
           responseUrl.includes(
             "https://www.douyin.com/aweme/v1/web/aweme/detail/"
