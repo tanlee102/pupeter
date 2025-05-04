@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import puppeteer from "puppeteer";
 export const dynamic = "force-dynamic";
-export const maxDuration = 80;
+export const maxDuration = 100;
 
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
@@ -28,16 +28,19 @@ export async function GET(request) {
     });
     const page = await browser.newPage();
 
-    // Block images, stylesheets, fonts to save bandwidth and speed up
+    // Block images, stylesheets, fonts, media to save bandwidth and speed up
     await page.setRequestInterception(true);
     page.on("request", (req) => {
       const resourceType = req.resourceType();
-      if (["image", "stylesheet", "font"].includes(resourceType)) {
+      if (["image", "stylesheet", "font", "media"].includes(resourceType)) {
         req.abort();
       } else {
         req.continue();
       }
     });
+
+    await page.setViewport({ width: 500, height: 300 });
+    await page.setCacheEnabled(false);
 
     let url = urlToVisit;
     if (!/^https?:\/\//i.test(url)) {
@@ -48,7 +51,6 @@ export async function GET(request) {
     page.on("response", async (response) => {
       try {
         const responseUrl = response.url();
-        console.log(responseUrl);
         if (
           responseUrl.includes(
             "https://www.douyin.com/aweme/v1/web/aweme/detail/"
@@ -58,24 +60,20 @@ export async function GET(request) {
           foundData = await response.json();
           responsePromiseResolve(); // resolve ngay khi có data
         }
-      } catch (err) {
-        // Ignore JSON parse errors for non-JSON responses
-      }
+      } catch (err) {}
     });
 
-    // Promise race: chờ response hoặc timeout tổng thể 80s
-    const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 80000));
+    // Promise race: chờ response hoặc timeout tổng thể 95s
+    const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 95000));
 
     await Promise.race([
       (async () => {
         try {
           await page.goto(url, {
-            timeout: 70000,
+            timeout: 90000,
             waitUntil: "domcontentloaded",
           });
-        } catch (err) {
-          // Có thể timeout, không sao
-        }
+        } catch (err) {}
         await responsePromise;
       })(),
       timeoutPromise,
@@ -93,7 +91,6 @@ export async function GET(request) {
     }
   } catch (error) {
     if (browser) await browser.close();
-    console.error("Error:", error);
     return NextResponse.json(
       { message: "Error fetching data" },
       { status: 500 }
