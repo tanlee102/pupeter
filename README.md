@@ -62,6 +62,7 @@ routes traffic after `/api/health` confirms that Chrome is ready.
 
 Render environment settings:
 
+- `DOUYIN_TIMEOUT_MS=180000` allows a Douyin lookup to run for up to three minutes.
 - `MAX_CONCURRENT_PAGES=2` limits Chrome memory usage.
 - `MAX_QUEUE_LENGTH=20` rejects overload instead of exhausting memory.
 - `QUEUE_TIMEOUT_MS=45000` prevents requests from waiting indefinitely.

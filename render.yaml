@@ -9,6 +9,8 @@ services:
     maxShutdownDelaySeconds: 70
     autoDeployTrigger: commit
     envVars:
+      - key: DOUYIN_TIMEOUT_MS
+        value: "180000"
       - key: MAX_CONCURRENT_PAGES
         value: "2"
       - key: MAX_QUEUE_LENGTH

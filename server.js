@@ -4,7 +4,12 @@ import puppeteer from "puppeteer";
 const HOST = "0.0.0.0";
 const PORT = readBoundedInteger("PORT", 3000, 1, 65_535);
 const DETAIL_PATH = "/aweme/v1/web/aweme/detail/";
-const PAGE_TIMEOUT_MS = 55_000;
+const PAGE_TIMEOUT_MS = readBoundedInteger(
+  "DOUYIN_TIMEOUT_MS",
+  180_000,
+  10_000,
+  300_000
+);
 const CACHE_TTL_MS = 2 * 60 * 1000;
 const MAX_CACHE_TTL_MS = 15 * 60 * 1000;
 const CACHE_EXPIRY_MARGIN_MS = 5 * 60 * 1000;
@@ -148,6 +153,7 @@ async function closeBrowser() {
 async function configurePage(page, timeoutMs = PAGE_TIMEOUT_MS) {
   page.setDefaultNavigationTimeout(timeoutMs);
   page.setDefaultTimeout(timeoutMs);
+  await page.setBypassServiceWorker(true);
   await page.setViewport({ width: 800, height: 600, deviceScaleFactor: 1 });
   await page.setExtraHTTPHeaders({
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
@@ -325,10 +331,36 @@ function sanitizeAccountName(name) {
 
 function responseIsAwemeDetail(response) {
   try {
-    return new URL(response.url()).pathname === DETAIL_PATH;
+    return (
+      response.request().method() === "GET" &&
+      response.status() === 200 &&
+      response.headers()["content-type"]?.includes("application/json") &&
+      new URL(response.url()).pathname === DETAIL_PATH
+    );
   } catch {
     return false;
   }
+}
+
+async function waitForAwemeDetail(page) {
+  let payload = null;
+  await page.waitForResponse(
+    async (response) => {
+      if (!responseIsAwemeDetail(response)) return false;
+
+      try {
+        const candidate = await response.json();
+        if (!Object.hasOwn(candidate ?? {}, "aweme_detail")) return false;
+        payload = candidate;
+        return true;
+      } catch {
+        // Douyin can emit an empty response before retrying with valid JSON.
+        return false;
+      }
+    },
+    { timeout: PAGE_TIMEOUT_MS }
+  );
+  return payload;
 }
 
 async function resolveDouyinVideo(searchParams) {
@@ -373,10 +405,9 @@ async function resolveDouyinVideo(searchParams) {
     page = await browser.newPage();
     await configurePage(page);
 
-    const detailResponsePromise = page
-      .waitForResponse(responseIsAwemeDetail, { timeout: PAGE_TIMEOUT_MS })
+    const detailResponsePromise = waitForAwemeDetail(page)
       .then(
-        (response) => ({ response }),
+        (payload) => ({ payload }),
         (error) => ({ error })
       );
     const navigationPromise = page
@@ -390,7 +421,7 @@ async function resolveDouyinVideo(searchParams) {
       );
 
     const detailResult = await detailResponsePromise;
-    if (!detailResult.response) {
+    if (!detailResult.payload) {
       const navigationResult = await navigationPromise;
       throw (
         detailResult.error ??
@@ -399,8 +430,7 @@ async function resolveDouyinVideo(searchParams) {
       );
     }
 
-    const payload = await detailResult.response.json();
-    const detail = payload?.aweme_detail;
+    const detail = detailResult.payload.aweme_detail;
     if (!detail) {
       return finish({
         status: 404,
@@ -505,9 +535,10 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.requestTimeout = 120_000;
+server.requestTimeout = PAGE_TIMEOUT_MS + QUEUE_TIMEOUT_MS + 30_000;
 server.headersTimeout = 15_000;
 server.keepAliveTimeout = 5_000;
+server.setTimeout(PAGE_TIMEOUT_MS + QUEUE_TIMEOUT_MS + 30_000);
 
 server.listen(PORT, HOST, () => {
   console.log(`Douyin API listening on http://${HOST}:${PORT}`);
