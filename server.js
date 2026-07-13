@@ -275,20 +275,22 @@ function toVariant(rate) {
   const height = Number(address.height) || 0;
   return {
     url,
-    pixels: width * height,
-    bitRate: Number(rate?.bit_rate) || 0,
-    fps: Number(rate?.FPS) || 0,
+    width,
+    height,
     dataSize: Number(address.data_size) || 0,
-    shortEdge: Math.min(width, height),
   };
 }
 
-function compareQuality(a, b) {
+function selectSmallestVariantAtLeast(variants, minimumDimension) {
   return (
-    b.pixels - a.pixels ||
-    b.bitRate - a.bitRate ||
-    b.fps - a.fps ||
-    b.dataSize - a.dataSize
+    variants
+      .filter(
+        ({ width, height, dataSize }) =>
+          width >= minimumDimension &&
+          height >= minimumDimension &&
+          dataSize > 0
+      )
+      .sort((a, b) => a.dataSize - b.dataSize)[0] ?? null
   );
 }
 
@@ -297,23 +299,17 @@ function selectBestVideo(video, isFHD) {
     .map(toVariant)
     .filter(Boolean);
 
-  for (const address of [
-    video?.play_addr,
-    video?.play_addr_h264,
-    video?.play_addr_265,
-  ]) {
-    const variant = toVariant(address);
-    if (variant) variants.push(variant);
+  if (isFHD) {
+    const fhdVariant = selectSmallestVariantAtLeast(variants, 1120);
+    if (fhdVariant) return fhdVariant;
   }
 
-  if (variants.length === 0) return null;
-
-  let eligible = variants;
-  if (!isFHD) {
-    const upTo1080p = variants.filter(({ shortEdge }) => shortEdge <= 1080);
-    if (upTo1080p.length > 0) eligible = upTo1080p;
+  for (const minimumDimension of [1080, 720, 540]) {
+    const variant = selectSmallestVariantAtLeast(variants, minimumDimension);
+    if (variant) return variant;
   }
-  return eligible.sort(compareQuality)[0];
+
+  return null;
 }
 
 function isFHDRequest(searchParams) {

@@ -6,9 +6,10 @@ Resolve the best available Douyin video stream:
 GET /api?id=7659729940322057381&fhd=true
 ```
 
-`fhd=true` (also accepted as `mode=FHD` or `quality=FHD`) removes the 1080p
-cap and chooses the highest-resolution stream returned by Douyin, followed by
-bitrate, frame rate, and file size.
+`fhd=true` (also accepted as `mode=FHD` or `quality=FHD`) uses the original
+selection behavior: among bitrate variants whose width and height are both at
+least 1120 pixels, it chooses the smallest file. If none qualifies, selection
+falls back through the 1080, 720, and 540 pixel tiers.
 
 The successful response format remains:
 
@@ -20,10 +21,11 @@ The successful response format remains:
 }
 ```
 
-Without FHD mode, selection is capped at 1080p for broader device
-compatibility. Successful results are cached in each server instance for at
-least two minutes and up to 15 minutes when the CDN URL exposes a safe expiry
-window. Concurrent requests for the same video share one browser lookup.
+Without FHD mode, selection starts at the 1080 pixel tier, then falls back to
+720 and 540, choosing the smallest qualifying file at each tier. Successful
+results are cached in each server instance for at least two minutes and up to
+15 minutes when the CDN URL exposes a safe expiry window. Concurrent requests
+for the same video share one browser lookup.
 
 ## Getting Started
 
