@@ -57,8 +57,8 @@ service retains its current plan. Use an always-on paid instance for reliable
 Puppeteer latency. A free instance can cold-start and has tighter memory
 limits.
 
-Automatic deploys wait for the included GitHub Actions production checks,
-which audit and lint the code and build the Linux Docker image.
+Automatic deploys run on each commit. Render builds the Docker image and only
+routes traffic after `/api/health` confirms that Chrome is ready.
 
 Render environment settings:
 

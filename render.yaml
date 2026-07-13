@@ -7,7 +7,7 @@ services:
     dockerContext: .
     healthCheckPath: /api/health
     maxShutdownDelaySeconds: 70
-    autoDeployTrigger: checksPass
+    autoDeployTrigger: commit
     envVars:
       - key: MAX_CONCURRENT_PAGES
         value: "2"
