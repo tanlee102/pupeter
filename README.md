@@ -1,4 +1,29 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Douyin video URL API
+
+Resolve the best available Douyin video stream:
+
+```text
+GET /api?id=7659729940322057381&fhd=true
+```
+
+`fhd=true` (also accepted as `mode=FHD` or `quality=FHD`) removes the 1080p
+cap and chooses the highest-resolution stream returned by Douyin, followed by
+bitrate, frame rate, and file size.
+
+The successful response format remains:
+
+```json
+{
+  "video_url": "https://...",
+  "thumbnail_url": "https://...",
+  "account_name": "..."
+}
+```
+
+Without FHD mode, selection is capped at 1080p for broader device
+compatibility. Successful results are cached in each server instance for at
+least two minutes and up to 15 minutes when the CDN URL exposes a safe expiry
+window. Concurrent requests for the same video share one browser lookup.
 
 ## Getting Started
 
@@ -14,23 +39,34 @@ pnpm dev
 bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Call [the local API](http://localhost:3000/api?id=7659729940322057381&fhd=true).
 
-You can start editing the page by modifying `app/page.js`. The page auto-updates as you edit the file.
+## Deploy on Render
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Use the included `render.yaml` Blueprint. It deploys the service from the
+multi-stage `Dockerfile` in Render's Singapore region, includes the Linux
+libraries required by Chrome, runs as a non-root user, and checks
+`/api/health` during deploys.
 
-## Learn More
+1. Push this repository to GitHub so the included production workflow runs.
+2. In Render, choose **New > Blueprint** and select the repository.
+3. Review the generated `douyin-video-api` web service and deploy it.
 
-To learn more about Next.js, take a look at the following resources:
+For a new service, Render defaults an omitted plan to Starter; an existing
+service retains its current plan. Use an always-on paid instance for reliable
+Puppeteer latency. A free instance can cold-start and has tighter memory
+limits.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Automatic deploys wait for the included GitHub Actions production checks,
+which audit and lint the code and build the Linux Docker image.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Render environment settings:
 
-## Deploy on Vercel
+- `MAX_CONCURRENT_PAGES=2` limits Chrome memory usage.
+- `MAX_QUEUE_LENGTH=20` rejects overload instead of exhausting memory.
+- `QUEUE_TIMEOUT_MS=45000` prevents requests from waiting indefinitely.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The service is a plain Node.js HTTP server that binds to Render's `PORT` on
+`0.0.0.0`. It prewarms Chrome and a lightweight Douyin session before the
+health check reports ready, avoiding framework and first-browser-request
+overhead.

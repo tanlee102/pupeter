@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: douyin-video-api
+    runtime: docker
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    maxShutdownDelaySeconds: 70
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: MAX_CONCURRENT_PAGES
+        value: "2"
+      - key: MAX_QUEUE_LENGTH
+        value: "20"
+      - key: QUEUE_TIMEOUT_MS
+        value: "45000"
