@@ -1,4 +1,4 @@
-# Douyin video URL API
+# Social video metadata API
 
 Resolve the best available Douyin video stream:
 
@@ -20,6 +20,27 @@ The successful response format remains:
   "account_name": "..."
 }
 ```
+
+Resolve Instagram reel metadata from page HTML/DASH without `yt-dlp`:
+
+```text
+POST /api/instagram
+```
+
+```json
+{
+  "url": "https://www.instagram.com/reel/SHORTCODE/",
+  "headers": {
+    "cookie": "...",
+    "user-agent": "..."
+  }
+}
+```
+
+The Instagram response includes the matched `shortcode`, owner/account metadata,
+`video_url`, `audio_url`, `thumbnail_url`, source dimensions, and codec hints.
+Karana downloads the returned video/audio URLs, merges them with `ffmpeg`, then
+validates that the final MP4 has an audio stream before upload.
 
 Without FHD mode, selection starts at the 1080 pixel tier, then falls back to
 720 and 540, choosing the smallest qualifying file at each tier. Successful

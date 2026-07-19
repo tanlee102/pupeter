@@ -33,6 +33,33 @@ const BLOCKED_RESOURCE_TYPES = new Set([
   "font",
   "media",
 ]);
+const INSTAGRAM_PAGE_TIMEOUT_MS = readBoundedInteger(
+  "INSTAGRAM_TIMEOUT_MS",
+  90_000,
+  5_000,
+  180_000
+);
+const INSTAGRAM_CACHE_TTL_MS = 60 * 1000;
+const INSTAGRAM_DEFAULT_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+const INSTAGRAM_PAGE_HEADER_NAMES = new Set([
+  "accept",
+  "accept-language",
+  "cookie",
+  "referer",
+  "sec-ch-ua",
+  "sec-ch-ua-mobile",
+  "sec-ch-ua-platform",
+  "sec-fetch-dest",
+  "sec-fetch-mode",
+  "sec-fetch-site",
+  "user-agent",
+  "x-asbd-id",
+  "x-csrftoken",
+  "x-ig-app-id",
+  "x-ig-www-claim",
+  "x-requested-with",
+]);
 
 let activePages = 0;
 let browserPromise = null;
@@ -325,6 +352,464 @@ function sanitizeAccountName(name) {
   return name.replace(/[<>:"/\\|?*\u0000-\u001F]+/g, "_").trim() || null;
 }
 
+function decodeHtmlText(value = "") {
+  return String(value)
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&#x2F;/g, "/")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+function decodeInstagramEscapes(value = "") {
+  return decodeHtmlText(value)
+    .replace(/\\u003C/g, "<")
+    .replace(/\\u003E/g, ">")
+    .replace(/\\u0026/g, "&")
+    .replace(/\\\//g, "/");
+}
+
+function walkJson(value, visit, path = []) {
+  if (!value || typeof value !== "object") return;
+  visit(value, path);
+
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      walkJson(value[index], visit, path.concat(index));
+    }
+    return;
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    walkJson(child, visit, path.concat(key));
+  }
+}
+
+function parseXmlAttributes(source = "") {
+  const attributes = {};
+  for (const match of source.matchAll(/([\w:-]+)="([^"]*)"/g)) {
+    attributes[match[1]] = decodeHtmlText(match[2]);
+  }
+  return attributes;
+}
+
+function parseInstagramDashManifest(manifest) {
+  const xml = decodeInstagramEscapes(manifest);
+  const representations = [];
+  const adaptationSetPattern =
+    /<AdaptationSet\b([^>]*)>([\s\S]*?)<\/AdaptationSet>/g;
+  let adaptationSetMatch;
+
+  while ((adaptationSetMatch = adaptationSetPattern.exec(xml))) {
+    const adaptationSet = parseXmlAttributes(adaptationSetMatch[1]);
+    const representationPattern =
+      /<Representation\b([^>]*)>([\s\S]*?)<\/Representation>/g;
+    let representationMatch;
+
+    while ((representationMatch = representationPattern.exec(adaptationSetMatch[2]))) {
+      const representation = parseXmlAttributes(representationMatch[1]);
+      const baseUrl = representationMatch[2]
+        .match(/<BaseURL>([\s\S]*?)<\/BaseURL>/)?.[1]
+        ?.trim();
+
+      if (!baseUrl) continue;
+      representations.push({
+        ...adaptationSet,
+        ...representation,
+        contentType:
+          adaptationSet.contentType ||
+          representation.contentType ||
+          adaptationSet.mimeType ||
+          representation.mimeType ||
+          "",
+        url: decodeInstagramEscapes(baseUrl),
+      });
+    }
+  }
+
+  return representations;
+}
+
+function parseQualityLabel(label) {
+  const match = String(label || "").match(/(\d+)/);
+  return match ? Number.parseInt(match[1], 10) : 0;
+}
+
+function representationScore(representation) {
+  const width = Number.parseInt(representation.width || "0", 10) || 0;
+  const height = Number.parseInt(representation.height || "0", 10) || 0;
+  const bandwidth = Number.parseInt(representation.bandwidth || "0", 10) || 0;
+  return {
+    pixels: width * height,
+    quality: parseQualityLabel(representation.FBQualityLabel),
+    bandwidth,
+  };
+}
+
+function compareVideoRepresentations(left, right) {
+  const leftScore = representationScore(left);
+  const rightScore = representationScore(right);
+  return (
+    rightScore.pixels - leftScore.pixels ||
+    rightScore.quality - leftScore.quality ||
+    rightScore.bandwidth - leftScore.bandwidth
+  );
+}
+
+function selectBestInstagramVideo(representations) {
+  return (
+    representations
+      .filter((representation) => {
+        const contentType = String(representation.contentType || "").toLowerCase();
+        const mimeType = String(representation.mimeType || "").toLowerCase();
+        return contentType.includes("video") || mimeType.includes("video");
+      })
+      .sort(compareVideoRepresentations)[0] ?? null
+  );
+}
+
+function selectBestInstagramAudio(representations) {
+  return (
+    representations
+      .filter((representation) => {
+        const contentType = String(representation.contentType || "").toLowerCase();
+        const mimeType = String(representation.mimeType || "").toLowerCase();
+        return contentType.includes("audio") || mimeType.includes("audio");
+      })
+      .sort(
+        (left, right) =>
+          (Number.parseInt(right.bandwidth || "0", 10) || 0) -
+          (Number.parseInt(left.bandwidth || "0", 10) || 0)
+      )[0] ?? null
+  );
+}
+
+function selectBestInstagramVersion(versions = []) {
+  return (
+    versions
+      .filter((version) => typeof version?.url === "string" && version.url)
+      .sort((left, right) => {
+        const leftPixels = (Number(left.width) || 0) * (Number(left.height) || 0);
+        const rightPixels = (Number(right.width) || 0) * (Number(right.height) || 0);
+        return rightPixels - leftPixels;
+      })[0] ?? null
+  );
+}
+
+function selectBestThumbnail(media) {
+  const candidates = Array.isArray(media?.image_versions2?.candidates)
+    ? media.image_versions2.candidates
+    : [];
+  const selected = candidates
+    .filter((candidate) => typeof candidate?.url === "string" && candidate.url)
+    .sort((left, right) => {
+      const leftPixels = (Number(left.width) || 0) * (Number(left.height) || 0);
+      const rightPixels = (Number(right.width) || 0) * (Number(right.height) || 0);
+      return rightPixels - leftPixels;
+    })[0];
+
+  return (
+    selected?.url ||
+    media?.thumbnail_src ||
+    media?.display_url ||
+    media?.image_versions2?.additional_candidates?.first_frame?.url ||
+    null
+  );
+}
+
+function getInstagramShortcode(rawUrl, explicitShortcode) {
+  const shortcode = explicitShortcode?.trim();
+  if (shortcode && /^[A-Za-z0-9_-]{5,40}$/.test(shortcode)) return shortcode;
+
+  try {
+    const parsed = new URL(rawUrl);
+    const match = parsed.pathname.match(/\/(?:reel|reels|p|tv)\/([^/?#]+)/i);
+    if (match?.[1] && /^[A-Za-z0-9_-]{5,40}$/.test(match[1])) {
+      return match[1];
+    }
+  } catch {
+    // The caller may pass a shortcode directly instead of a full URL.
+  }
+
+  if (rawUrl && /^[A-Za-z0-9_-]{5,40}$/.test(rawUrl.trim())) {
+    return rawUrl.trim();
+  }
+
+  return null;
+}
+
+function buildInstagramReelUrl(shortcode) {
+  return `https://www.instagram.com/reels/${encodeURIComponent(shortcode)}/`;
+}
+
+function cleanInstagramHeaders(headers = {}) {
+  const cleaned = {
+    accept:
+      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "accept-language": "en-US,en;q=0.9",
+    referer: "https://www.instagram.com/",
+    "sec-fetch-dest": "document",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-site": "none",
+    "user-agent": INSTAGRAM_DEFAULT_USER_AGENT,
+  };
+
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
+    return cleaned;
+  }
+
+  for (const [key, value] of Object.entries(headers)) {
+    const normalizedKey = key.toLowerCase();
+    if (!INSTAGRAM_PAGE_HEADER_NAMES.has(normalizedKey)) continue;
+    if (typeof value !== "string" || !value.trim()) continue;
+    cleaned[normalizedKey] = value;
+  }
+
+  return cleaned;
+}
+
+function getInstagramManifest(media) {
+  return media?.dash_info?.video_dash_manifest || media?.video_dash_manifest || null;
+}
+
+function isMatchingInstagramMedia(media, shortcode) {
+  return (
+    (media?.code === shortcode || media?.shortcode === shortcode) &&
+    (getInstagramManifest(media) || Array.isArray(media?.video_versions))
+  );
+}
+
+function extractInstagramJsonScripts(html) {
+  return [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)]
+    .filter((match) => /type=["']application\/json["']/i.test(match[1]))
+    .map((match) => decodeHtmlText(match[2].trim()))
+    .filter(Boolean);
+}
+
+function extractInstagramMediaFromHtml(html, shortcode) {
+  for (const script of extractInstagramJsonScripts(html)) {
+    let parsed;
+    try {
+      parsed = JSON.parse(script);
+    } catch {
+      continue;
+    }
+
+    let matchedMedia = null;
+    walkJson(parsed, (candidate) => {
+      if (!matchedMedia && isMatchingInstagramMedia(candidate, shortcode)) {
+        matchedMedia = candidate;
+      }
+    });
+
+    if (matchedMedia) return matchedMedia;
+  }
+
+  return null;
+}
+
+function buildInstagramOwner(owner) {
+  if (!owner) return null;
+  return {
+    id: owner.id || owner.pk || "",
+    pk: owner.pk || owner.id || "",
+    username: owner.username || "",
+    full_name: owner.full_name || "",
+    is_verified: Boolean(owner.is_verified),
+  };
+}
+
+function buildInstagramMetadata(media, shortcode) {
+  const owner = media.user || media.owner || media.caption?.user || null;
+  const caption =
+    typeof media.caption === "string" ? media.caption : media.caption?.text || "";
+  const title = caption.split("\n").map((line) => line.trim()).find(Boolean) || "";
+  const thumbnailUrl = selectBestThumbnail(media);
+  const manifest = getInstagramManifest(media);
+  const versions = Array.isArray(media.video_versions) ? media.video_versions : [];
+  const ownerPayload = buildInstagramOwner(owner);
+  const accountName =
+    sanitizeAccountName(ownerPayload?.username || ownerPayload?.full_name) || "";
+
+  if (manifest) {
+    const representations = parseInstagramDashManifest(manifest);
+    const video = selectBestInstagramVideo(representations);
+    const audio = selectBestInstagramAudio(representations);
+
+    if (!video?.url) {
+      throw new Error("Instagram manifest did not include a playable video URL");
+    }
+
+    return {
+      source: "instagram-html-dash",
+      shortcode,
+      id: media.pk || media.id || shortcode,
+      media_id: media.id || "",
+      title,
+      caption,
+      account_name: accountName,
+      owner: ownerPayload,
+      video_url: video.url,
+      audio_url: audio?.url || null,
+      thumbnail_url: thumbnailUrl,
+      width: Number.parseInt(video.width || "0", 10) || media.original_width || null,
+      height: Number.parseInt(video.height || "0", 10) || media.original_height || null,
+      video_codec: video.codecs || "",
+      audio_codec: audio?.codecs || "",
+      has_audio_format: Boolean(audio?.url),
+      requires_merge: Boolean(audio?.url),
+      format_count: representations.length,
+      quality_label: video.FBQualityLabel || "",
+      video_bandwidth: Number.parseInt(video.bandwidth || "0", 10) || null,
+      audio_bandwidth: Number.parseInt(audio?.bandwidth || "0", 10) || null,
+      taken_at: media.taken_at || null,
+      like_count: media.like_count ?? null,
+      view_count: media.view_count ?? media.play_count ?? null,
+    };
+  }
+
+  const version = selectBestInstagramVersion(versions);
+  if (!version?.url) {
+    throw new Error("Instagram page did not include a playable video URL");
+  }
+
+  return {
+    source: "instagram-html-video_versions",
+    shortcode,
+    id: media.pk || media.id || shortcode,
+    media_id: media.id || "",
+    title,
+    caption,
+    account_name: accountName,
+    owner: ownerPayload,
+    video_url: version.url,
+    audio_url: null,
+    thumbnail_url: thumbnailUrl,
+    width: Number(version.width) || media.original_width || null,
+    height: Number(version.height) || media.original_height || null,
+    video_codec: "",
+    audio_codec: "",
+    has_audio_format: true,
+    requires_merge: false,
+    format_count: versions.length,
+    quality_label: "",
+    video_bandwidth: null,
+    audio_bandwidth: null,
+    taken_at: media.taken_at || null,
+    like_count: media.like_count ?? null,
+    view_count: media.view_count ?? media.play_count ?? null,
+  };
+}
+
+async function fetchTextWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    return {
+      response,
+      text: await response.text(),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function readJsonBody(request, limitBytes = 128 * 1024) {
+  const chunks = [];
+  let size = 0;
+
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > limitBytes) {
+      throw new Error("Request body is too large");
+    }
+    chunks.push(chunk);
+  }
+
+  if (chunks.length === 0) return {};
+
+  const body = Buffer.concat(chunks).toString("utf8").trim();
+  if (!body) return {};
+  return JSON.parse(body);
+}
+
+async function resolveInstagramVideo(request, searchParams) {
+  const body = request.method === "POST" ? await readJsonBody(request) : {};
+  const rawUrl = body.url || searchParams.get("url") || searchParams.get("shortcode");
+  const shortcode = getInstagramShortcode(
+    rawUrl,
+    body.shortcode || searchParams.get("shortcode")
+  );
+
+  if (!shortcode) {
+    return {
+      status: 400,
+      body: { message: "Missing or invalid Instagram reel shortcode" },
+    };
+  }
+
+  const cacheKey = `instagram:${shortcode}`;
+  const cached = getCachedResponse(cacheKey);
+  if (cached) return { status: 200, body: cached };
+
+  const pageUrl = buildInstagramReelUrl(shortcode);
+  const headers = cleanInstagramHeaders(body.headers);
+
+  try {
+    const { response, text } = await fetchTextWithTimeout(
+      pageUrl,
+      { headers, redirect: "follow" },
+      INSTAGRAM_PAGE_TIMEOUT_MS
+    );
+
+    if (!response.ok) {
+      return {
+        status: response.status,
+        body: {
+          message: `Instagram page returned ${response.status}`,
+          shortcode,
+        },
+      };
+    }
+
+    const media = extractInstagramMediaFromHtml(text, shortcode);
+    if (!media) {
+      return {
+        status: 404,
+        body: {
+          message: "Could not find matching Instagram media in page HTML",
+          shortcode,
+        },
+      };
+    }
+
+    const bodyPayload = {
+      ...buildInstagramMetadata(media, shortcode),
+      page_url: pageUrl,
+    };
+    cacheResponse(cacheKey, bodyPayload, INSTAGRAM_CACHE_TTL_MS);
+    return { status: 200, body: bodyPayload };
+  } catch (error) {
+    const timedOut = error?.name === "AbortError";
+    console.error(`[instagram] Failed to fetch reel ${shortcode}:`, error);
+    return {
+      status: timedOut ? 504 : 500,
+      body: {
+        message: timedOut
+          ? "Instagram request timed out"
+          : "Error fetching Instagram data",
+        shortcode,
+      },
+    };
+  }
+}
+
 function responseIsAwemeDetail(response) {
   try {
     return (
@@ -485,11 +970,11 @@ const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url ?? "/", "http://localhost");
 
-    if (request.method !== "GET") {
-      sendJson(response, 405, { message: "Method not allowed" }, { Allow: "GET" });
-      return;
-    }
     if (url.pathname === "/api/health") {
+      if (request.method !== "GET") {
+        sendJson(response, 405, { message: "Method not allowed" }, { Allow: "GET" });
+        return;
+      }
       const healthy = browserReady && !shuttingDown;
       sendJson(response, healthy ? 200 : 503, {
         status: shuttingDown ? "stopping" : healthy ? "ok" : "starting",
@@ -498,6 +983,34 @@ const server = createServer(async (request, response) => {
     }
     if (shuttingDown) {
       sendJson(response, 503, { message: "Service is restarting" });
+      return;
+    }
+
+    if (url.pathname === "/api/instagram") {
+      if (!["GET", "POST"].includes(request.method)) {
+        sendJson(response, 405, { message: "Method not allowed" }, { Allow: "GET, POST" });
+        return;
+      }
+
+      const result = await resolveInstagramVideo(request, url.searchParams);
+      sendJson(
+        response,
+        result.status,
+        result.body,
+        result.status === 200
+          ? { "Cache-Control": "private, max-age=30" }
+          : undefined
+      );
+      console.log(
+        `[http] ${request.method} /api/instagram ${result.status} ${
+          Date.now() - requestStartedAt
+        }ms`
+      );
+      return;
+    }
+
+    if (request.method !== "GET") {
+      sendJson(response, 405, { message: "Method not allowed" }, { Allow: "GET" });
       return;
     }
     if (url.pathname !== "/api") {
